@@ -1,0 +1,23 @@
+<configuration>
+    <!-- Desactivar logs de Hibernate -->
+    <logger name="org.hibernate.SQL" level="OFF"/>
+    <logger name="org.hibernate.type.descriptor.sql" level="OFF"/>
+
+    <!-- Desactivar logs de HikariCP -->
+    <logger name="com.zaxxer.hikari" level="OFF"/>
+
+    <!-- Habilitar logs de tu aplicación -->
+    <logger name="com.informaperu.cliente" level="INFO"/>
+
+    <!-- Nivel por defecto -->
+    <root level="WARN">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+    <!-- Appender para consola -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%msg%n</pattern>
+        </encoder>
+    </appender>
+</configuration>
