@@ -1,5 +1,15 @@
 package com.informaperu.cliente.serviceImpl;
 
+import com.informaperu.cliente.config.ProgressBar;
+import com.informaperu.cliente.entity.BatchState;
+import com.informaperu.cliente.entity.Cliente;
+import com.informaperu.cliente.model.ClienteDTO;
+import com.informaperu.cliente.model.ResponseClienteWrapper;
+import com.informaperu.cliente.repository.BatchStateRepository;
+import com.informaperu.cliente.repository.ClienteRepository;
+import com.informaperu.cliente.service.ClienteService;
+import com.informaperu.cliente.service.EmailService;
+import jakarta.transaction.Transactional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,25 +23,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
-import com.informaperu.cliente.entity.Cliente;
-import com.informaperu.cliente.model.ClienteDTO;
-import com.informaperu.cliente.model.ResponseClienteWrapper;
-import com.informaperu.cliente.repository.ClienteRepository;
-import com.informaperu.cliente.service.ClienteService;
-import com.informaperu.cliente.config.ProgressBar;
-
-import jakarta.transaction.Transactional;
-
-import javax.sql.DataSource;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
@@ -40,19 +36,29 @@ public class ClienteServiceImpl implements ClienteService {
 
     private static final Logger logger = LoggerFactory.getLogger(ClienteServiceImpl.class);
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static final int RETRY_WAIT_MINUTES = 5; // Tiempo de espera para reintentos (5 minutos)
-    private static final int MAX_RETRIES = 10; // Número máximo de reintentos antes de abortar
 
-    
     private final ClienteRepository repository;
+    private final BatchStateRepository batchStateRepository;
     private final RestTemplate restTemplate;
-    private final DataSource dataSource;
+    private final EmailService emailService;
 
     @Value("${api.url}")
     private String apiUrl;
 
     @Value("${api.token}")
     private String apiToken;
+
+    @Value("${batch.size}")
+    private int batchSize;
+
+    @Value("${batch.max-retries}")
+    private int maxRetries;
+
+    @Value("${batch.retry-wait-minutes}")
+    private int retryWaitMinutes;
+
+    @Value("${batch.notification.email}")
+    private String defaultNotificationEmail;
 
     // Batch parameters
     private String batchStartDate;
@@ -61,55 +67,73 @@ public class ClienteServiceImpl implements ClienteService {
     private int batchLimit;
     private int batchOffset;
     private String batchPortfolio;
+    private String notificationEmail;
+    private String batchId;
 
     // Flag to control scheduled execution
     private final AtomicBoolean batchRunning = new AtomicBoolean(false);
     private int currentRetryCount = 0;
+
     @Autowired
-    public ClienteServiceImpl(ClienteRepository repository, RestTemplate restTemplate, DataSource dataSource) {
+    public ClienteServiceImpl(ClienteRepository repository, BatchStateRepository batchStateRepository,
+                              RestTemplate restTemplate, EmailService emailService) {
         this.repository = repository;
+        this.batchStateRepository = batchStateRepository;
         this.restTemplate = restTemplate;
-        this.dataSource = dataSource;
+        this.emailService = emailService;
     }
 
     @Override
-    public void setBatchParameters(String startDate, String endDate, int intervalDays, int limit, int offset, String portfolio) {
+    public void setBatchParameters(String startDate, String endDate, int intervalDays, int limit, int offset,
+                                   String portfolio, String notificationEmail) {
         this.batchStartDate = startDate;
         this.batchEndDate = endDate;
         this.batchIntervalDays = intervalDays;
         this.batchLimit = limit;
         this.batchOffset = offset;
         this.batchPortfolio = portfolio;
-        this.batchRunning.set(true); // Enable scheduled execution after initial trigger
-        this.currentRetryCount = 0; // Reset retry counter on new parameters
-        
+        this.notificationEmail = notificationEmail != null && !notificationEmail.isEmpty() ? notificationEmail : defaultNotificationEmail;
+        this.batchId = UUID.randomUUID().toString();
+        this.batchRunning.set(true);
+        this.currentRetryCount = 0;
+
+        // Initialize batch state
+        BatchState state = new BatchState();
+        state.setBatchId(batchId);
+        state.setCompleted(false);
+        batchStateRepository.save(state);
+
         logger.info("╔══════════════════════════════════════════════════════════════════════╗");
         logger.info("║                      CONFIGURACIÓN DE BATCH                          ║");
         logger.info("╠══════════════════════════════════════════════════════════════════════╣");
+        logger.info("║ Batch ID: {} ║", String.format("%-50s", batchId));
         logger.info("║ Fecha inicio: {} ║", String.format("%-50s", startDate));
         logger.info("║ Fecha fin: {} ║", String.format("%-52s", endDate));
         logger.info("║ Intervalo días: {} ║", String.format("%-48s", intervalDays));
         logger.info("║ Límite: {} ║", String.format("%-54s", limit));
         logger.info("║ Offset: {} ║", String.format("%-54s", offset));
         logger.info("║ Portfolio: {} ║", String.format("%-52s", portfolio));
+        logger.info("║ Correo notificaciones: {} ║", String.format("%-40s", this.notificationEmail));
         logger.info("╚══════════════════════════════════════════════════════════════════════╝");
-    }
 
+        emailService.sendNotification(this.notificationEmail, "Batch Configurado",
+                String.format("Batch %s configurado con éxito.\nInicio: %s\nFin: %s\nIntervalo: %d días",
+                        batchId, startDate, endDate, intervalDays));
+    }
 
     @Override
     @Transactional
     public void procesarBatchConReintentos() {
         if (!batchRunning.get()) {
-            logger.info("⏸️  Batch no iniciado. Esperando trigger manual.");
+            logger.info("⏸️ Batch no iniciado. Esperando trigger manual.");
             return;
         }
 
         logger.info("╔═══════════════════════════════════════════════════════════════════╗");
         logger.info("║                INICIANDO PROCESAMIENTO DE BATCH                   ║");
         logger.info("╠═══════════════════════════════════════════════════════════════════╣");
-        logger.info("║ Periodo: {} a {} ║", 
-                String.format("%-25s", batchStartDate), 
-                String.format("%-25s", batchEndDate));
+        logger.info("║ Batch ID: {} ║", String.format("%-50s", batchId));
+        logger.info("║ Periodo: {} a {} ║", String.format("%-25s", batchStartDate), String.format("%-25s", batchEndDate));
         logger.info("╚═══════════════════════════════════════════════════════════════════╝");
 
         try {
@@ -118,35 +142,44 @@ public class ClienteServiceImpl implements ClienteService {
             handleBatchError(e);
         }
     }
-    
-    /**
-     * Método para procesar el batch completo con manejo de errores mejorado
-     */
+
     private void processFullBatch() {
         try {
-            // Limpiar tabla antes de procesar
-            logger.info("🗑️  Limpiando tabla de tipificaciones...");
-            clearTipificacionClientesTable();
-            logger.info("✅ Tabla limpiada exitosamente");
-
             LocalDateTime start = LocalDateTime.parse(batchStartDate, DATE_TIME_FORMATTER);
             LocalDateTime end = LocalDateTime.parse(batchEndDate, DATE_TIME_FORMATTER);
-            LocalDateTime currentStart = start;
-            
-            // Calcular el número total de intervalos para la barra de progreso
+            LocalDateTime currentStart;
+
+            // Load last processed state
+            Optional<BatchState> stateOpt = batchStateRepository.findById(batchId);
+            BatchState state = stateOpt.orElse(new BatchState());
+            if (state.getLastProcessedEnd() != null && !state.isCompleted()) {
+                currentStart = state.getLastProcessedEnd().plusSeconds(1);
+                logger.info("🔄 Reanudando desde el último intervalo procesado: {}", currentStart);
+            } else {
+                currentStart = start;
+            }
+
+            // Calculate total intervals for progress
             long totalIntervals = 0;
             LocalDateTime tempStart = start;
             while (!tempStart.isAfter(end)) {
                 totalIntervals++;
                 tempStart = tempStart.plusDays(batchIntervalDays);
             }
-            
+
             long currentInterval = 0;
             ProgressBar progressBar = new ProgressBar();
+            long intervalsProcessed = 0;
+            LocalDateTime tempCurrent = start;
+            while (!tempCurrent.isAfter(currentStart)) {
+                intervalsProcessed++;
+                tempCurrent = tempCurrent.plusDays(batchIntervalDays);
+            }
+            currentInterval = intervalsProcessed - 1;
 
             while (!currentStart.isAfter(end)) {
                 currentInterval++;
-                
+
                 LocalDateTime currentEnd = currentStart.plusDays(batchIntervalDays).minusSeconds(1);
                 if (currentEnd.isAfter(end)) {
                     currentEnd = end;
@@ -155,17 +188,23 @@ public class ClienteServiceImpl implements ClienteService {
                 String formattedStart = currentStart.format(DATE_TIME_FORMATTER);
                 String formattedEnd = currentEnd.format(DATE_TIME_FORMATTER);
 
-                logger.info("📅 Procesando intervalo {} de {}: {} a {}", 
-                    currentInterval, totalIntervals, formattedStart, formattedEnd);
-                
-                progressBar.update((int)(currentInterval * 100 / totalIntervals));
+                logger.info("📅 Procesando intervalo {} de {}: {} a {}", currentInterval, totalIntervals, formattedStart, formattedEnd);
+                progressBar.update((int) (currentInterval * 100 / totalIntervals));
 
                 try {
                     procesarIntervalo(formattedStart, formattedEnd);
+
+                    // Update batch state
+                    state.setLastProcessedStart(currentStart);
+                    state.setLastProcessedEnd(currentEnd);
+                    state.setBatchId(batchId);
+                    batchStateRepository.save(state);
+
+                    emailService.sendNotification(notificationEmail, "Intervalo Procesado",
+                            String.format("Batch %s: Intervalo %d/%d procesado.\nDesde: %s\nHasta: %s",
+                                    batchId, currentInterval, totalIntervals, formattedStart, formattedEnd));
                 } catch (Exception e) {
-                    // Si hay un error en el intervalo, lanzamos la excepción para que se maneje en el nivel superior
-                    logger.error("❌ Error al procesar intervalo {} a {}: {}", 
-                        formattedStart, formattedEnd, e.getMessage());
+                    logger.error("❌ Error al procesar intervalo {} a {}: {}", formattedStart, formattedEnd, e.getMessage());
                     throw e;
                 }
 
@@ -173,103 +212,83 @@ public class ClienteServiceImpl implements ClienteService {
             }
 
             progressBar.update(100);
-            
-            // Reset batchRunning if end date is reached
-            if (currentStart.isAfter(end)) {
-                currentRetryCount = 0; // Reset retry counter on successful completion
-                batchRunning.set(false);
-                logger.info("╔═══════════════════════════════════════════════════════════════════╗");
-                logger.info("║                      BATCH COMPLETADO                             ║");
-                logger.info("╠═══════════════════════════════════════════════════════════════════╣");
-                logger.info("║ Periodo completado: {} a {} ║", 
-                        String.format("%-20s", batchStartDate), 
-                        String.format("%-20s", batchEndDate));
-                logger.info("╚═══════════════════════════════════════════════════════════════════╝");
-            }
+
+            // Mark batch as completed
+            state.setCompleted(true);
+            batchStateRepository.save(state);
+            batchRunning.set(false);
+            currentRetryCount = 0;
+
+            logger.info("╔═══════════════════════════════════════════════════════════════════╗");
+            logger.info("║                      BATCH COMPLETADO                             ║");
+            logger.info("╠═══════════════════════════════════════════════════════════════════╣");
+            logger.info("║ Batch ID: {} ║", String.format("%-50s", batchId));
+            logger.info("║ Periodo completado: {} a {} ║", String.format("%-20s", batchStartDate), String.format("%-20s", batchEndDate));
+            logger.info("╚═══════════════════════════════════════════════════════════════════╝");
+
+            emailService.sendNotification(notificationEmail, "Batch Completado",
+                    String.format("Batch %s completado con éxito.\nPeriodo: %s a %s", batchId, batchStartDate, batchEndDate));
         } catch (Exception e) {
-            // Si hay un error, se propagará para ser manejado por el método que llamó a este
             throw new RuntimeException("Error al procesar batch completo: " + e.getMessage(), e);
         }
     }
-    
-    /**
-     * Método para procesar un intervalo específico
-     */
+
     private void procesarIntervalo(String formattedStart, String formattedEnd) {
         try {
             logger.info("🔄 Obteniendo datos de la API para el intervalo...");
             List<ClienteDTO> datos = obtenerDatosDesdeAPI(batchLimit, batchOffset, batchPortfolio, formattedStart, formattedEnd);
             logger.info("✅ Datos obtenidos correctamente: {} registros", datos.size());
-            
+
             logger.info("💾 Guardando datos en la base de datos...");
             guardarDatosEnBD(datos);
             logger.info("✅ Datos guardados correctamente para el intervalo {} a {}", formattedStart, formattedEnd);
         } catch (Exception e) {
-            // Relanzamos la excepción para que sea manejada en el nivel superior
             logger.error("❌ Error al procesar intervalo: {}", e.getMessage());
             throw e;
         }
     }
 
-    /**
-     * Método para manejar errores del batch con reintentos automáticos
-     */
     private void handleBatchError(Exception e) {
         currentRetryCount++;
-        
-        if (currentRetryCount > MAX_RETRIES) {
-            logger.error("❌ Se ha alcanzado el número máximo de reintentos ({}). Abortando proceso batch.", MAX_RETRIES);
+
+        emailService.sendNotification(notificationEmail, "Error en Batch",
+                String.format("Batch %s: Error en intento %d/%d.\nMensaje: %s", batchId, currentRetryCount, maxRetries, e.getMessage()));
+
+        if (currentRetryCount > maxRetries) {
+            logger.error("❌ Se ha alcanzado el número máximo de reintentos ({}). Abortando proceso batch.", maxRetries);
             batchRunning.set(false);
+            emailService.sendNotification(notificationEmail, "Batch Abortado",
+                    String.format("Batch %s abortado tras %d reintentos fallidos.", batchId, maxRetries));
             return;
         }
-        
-        logger.error("❌ Error en el proceso batch (intento {}/{}): {}", 
-            currentRetryCount, MAX_RETRIES, e.getMessage(), e);
-        
+
+        logger.error("❌ Error en el proceso batch (intento {}/{}): {}", currentRetryCount, maxRetries, e.getMessage(), e);
+
         try {
-            // Muestra el temporizador de cuenta regresiva
-            logger.info("⏱️ Esperando {} minutos antes de reintentar el proceso completo...", RETRY_WAIT_MINUTES);
-            
-            for (int i = RETRY_WAIT_MINUTES; i > 0; i--) {
+            logger.info("⏱️ Esperando {} minutos antes de reintentar el proceso completo...", retryWaitMinutes);
+            for (int i = retryWaitMinutes; i > 0; i--) {
                 logger.info("⏳ Tiempo restante para reintento: {} minutos", i);
-                Thread.sleep(60 * 1000); // Esperar 1 minuto
+                Thread.sleep(60 * 1000);
             }
-            
-            logger.info("🔄 Reiniciando proceso batch desde el principio (intento {}/{})", 
-                currentRetryCount, MAX_RETRIES);
-            
-            // Intentamos procesar el batch nuevamente
+            logger.info("🔄 Reiniciando proceso batch (intento {}/{})", currentRetryCount, maxRetries);
             processFullBatch();
-            
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
             logger.error("⚠️ Interrupción durante la espera para reintento: {}", ie.getMessage());
+            emailService.sendNotification(notificationEmail, "Interrupción en Batch",
+                    String.format("Batch %s interrumpido durante espera de reintento: %s", batchId, ie.getMessage()));
         } catch (Exception retryException) {
-            // Si hay un error durante el reintento, lo manejamos recursivamente
             handleBatchError(retryException);
         }
     }
 
-
-    @Scheduled(cron = "0 */3 * * * ?") // Ejecutar cada 3 minutos para pruebas
+    @Scheduled(cron = "0 */3 * * * ?")
     public void triggerBatch() {
         logger.info("⏰ Ejecución programada activada");
         if (batchRunning.get()) {
             procesarBatchConReintentos();
         } else {
             logger.info("ℹ️ Batch no está activo. Esperando inicialización manual.");
-        }
-    }
-
-
-    public void clearTipificacionClientesTable() {
-        try (Connection conn = dataSource.getConnection();
-             Statement stmt = conn.createStatement()) {
-            stmt.execute("TRUNCATE TABLE [InformaPeru].[datos].[tipificaciones_por_cliente]");
-            logger.info("✅ Tabla tipificaciones_por_cliente truncada exitosamente");
-        } catch (SQLException e) {
-            logger.error("❌ Error al truncar la tabla tipificaciones_por_cliente: {}", e.getMessage(), e);
-            throw new RuntimeException("Error al truncar la tabla: " + e.getMessage());
         }
     }
 
@@ -282,18 +301,14 @@ public class ClienteServiceImpl implements ClienteService {
 
             LocalDateTime startDateTime = LocalDateTime.parse(startDate, DATE_TIME_FORMATTER);
             LocalDateTime endDateTime = LocalDateTime.parse(endDate, DATE_TIME_FORMATTER);
-            
+
             String formattedStartDate = startDateTime.format(DATE_TIME_FORMATTER);
             String formattedEndDate = endDateTime.format(DATE_TIME_FORMATTER);
-            
+
             String url = String.format("%s?limit=%d&offset=%d&portfolio=%s&start_date=%s&end_date=%s",
-                    apiUrl,
-                    limit,
-                    offset,
-                    URLEncoder.encode(portfolio, StandardCharsets.UTF_8.name()),
-                    formattedStartDate,
-                    formattedEndDate);
-            
+                    apiUrl, limit, offset, URLEncoder.encode(portfolio, StandardCharsets.UTF_8.name()),
+                    formattedStartDate, formattedEndDate);
+
             logger.info("🔗 URL API: {}", url);
 
             HttpHeaders headers = new HttpHeaders();
@@ -312,11 +327,7 @@ public class ClienteServiceImpl implements ClienteService {
 
             logger.info("🔄 Enviando solicitud a API...");
             ResponseEntity<ResponseClienteWrapper> response = restTemplate.exchange(
-                    url,
-                    HttpMethod.GET,
-                    entity,
-                    ResponseClienteWrapper.class
-            );
+                    url, HttpMethod.GET, entity, ResponseClienteWrapper.class);
 
             logger.info("✅ Respuesta recibida. Status Code: {}", response.getStatusCode());
 
@@ -328,25 +339,23 @@ public class ClienteServiceImpl implements ClienteService {
                         .filter(dto -> {
                             boolean isValid = dto.getIdGestion() != null && dto.getFechaTipificacion() != null;
                             if (!isValid) {
-                                logger.debug("⚠️  Registro inválido: idGestion={}, fechaTipificacion={}",
+                                logger.debug("⚠️ Registro inválido: idGestion={}, fechaTipificacion={}",
                                         dto.getIdGestion(), dto.getFechaTipificacion());
                             }
                             return isValid;
                         })
                         .collect(Collectors.toList());
 
-                logger.info("✅ Registros válidos: {} ({}%)", 
-                    results.size(), 
-                    response.getBody().getResults().size() > 0 ? 
-                        Math.round(results.size() * 100.0 / response.getBody().getResults().size()) : 0);
+                logger.info("✅ Registros válidos: {} ({}%)", results.size(),
+                        response.getBody().getResults().size() > 0 ?
+                                Math.round(results.size() * 100.0 / response.getBody().getResults().size()) : 0);
                 return results;
             } else {
-                logger.warn("⚠️  La respuesta de la API está vacía");
+                logger.warn("⚠️ La respuesta de la API está vacía");
                 return new ArrayList<>();
             }
         } catch (HttpClientErrorException e) {
-            logger.error("❌ Error en la API:\n Status: {}\n Body: {}",
-                    e.getStatusCode(), e.getResponseBodyAsString());
+            logger.error("❌ Error en la API:\n Status: {}\n Body: {}", e.getStatusCode(), e.getResponseBodyAsString());
             throw new RuntimeException("Error en la API: " + e.getResponseBodyAsString(), e);
         } catch (Exception e) {
             logger.error("❌ Error al consumir la API: {}", e.getMessage(), e);
@@ -357,7 +366,7 @@ public class ClienteServiceImpl implements ClienteService {
     @Override
     public void guardarDatosEnBD(List<ClienteDTO> datos) {
         if (datos == null || datos.isEmpty()) {
-            logger.info("ℹ️  No hay datos para guardar");
+            logger.info("ℹ️ No hay datos para guardar");
             return;
         }
 
@@ -367,35 +376,41 @@ public class ClienteServiceImpl implements ClienteService {
                 .filter(dto -> {
                     boolean isValid = dto.getIdGestion() != null && dto.getFechaTipificacion() != null;
                     if (!isValid) {
-                        logger.debug("⚠️  Registro inválido: idGestion={}, fechaTipificacion={}",
+                        logger.debug("⚠️ Registro inválido: idGestion={}, fechaTipificacion={}",
                                 dto.getIdGestion(), dto.getFechaTipificacion());
+                        return false;
                     }
-                    return isValid;
+                    LocalDateTime fechaTipificacion = parseDateTime(dto.getFechaTipificacion());
+                    Optional<Cliente> existing = repository.findByIdGestionAndFechaTipificacion(dto.getIdGestion(), fechaTipificacion);
+                    if (existing.isPresent()) {
+                        logger.debug("⚠️ Registro duplicado: idGestion={}, fechaTipificacion={}",
+                                dto.getIdGestion(), dto.getFechaTipificacion());
+                        return false;
+                    }
+                    return true;
                 })
                 .map(this::mapToEntity)
                 .collect(Collectors.toList());
 
         if (entidades.isEmpty()) {
-            logger.info("ℹ️  No hay registros válidos para guardar después de la validación");
+            logger.info("ℹ️ No hay registros válidos o no duplicados para guardar");
             return;
         }
 
         logger.info("📊 Guardando {} registros en la base de datos", entidades.size());
-        
-        int batchSize = 1000;
+
         int totalBatches = (int) Math.ceil(entidades.size() / (double) batchSize);
         ProgressBar progressBar = new ProgressBar();
-        
+
         for (int i = 0; i < entidades.size(); i += batchSize) {
             int batchNum = (i / batchSize) + 1;
             List<Cliente> batch = entidades.subList(i, Math.min(i + batchSize, entidades.size()));
-            
-            logger.info("🔄 Guardando lote {}/{} ({} registros)...", 
-                batchNum, totalBatches, batch.size());
-            
+
+            logger.info("🔄 Guardando lote {}/{} ({} registros)...", batchNum, totalBatches, batch.size());
+
             try {
                 repository.saveAll(batch);
-                int progress = (int)((batchNum * 100.0) / totalBatches);
+                int progress = (int) ((batchNum * 100.0) / totalBatches);
                 progressBar.update(progress);
                 logger.info("✅ Lote {}/{} guardado exitosamente", batchNum, totalBatches);
             } catch (Exception e) {
@@ -403,7 +418,7 @@ public class ClienteServiceImpl implements ClienteService {
                 throw new RuntimeException("Error al guardar datos en la BD: " + e.getMessage());
             }
         }
-        
+
         progressBar.update(100);
         logger.info("✅ Todos los datos guardados exitosamente en la base de datos");
     }
@@ -464,4 +479,39 @@ public class ClienteServiceImpl implements ClienteService {
         cliente.setFechaSincronizacion(parseDateTime(dto.getFechaSincronizacion()));
         return cliente;
     }
+
+    @Override
+    public void updateBatchConfig(Map<String, Object> config) {
+        if (config.containsKey("batchSize")) {
+            this.batchSize = Integer.parseInt(config.get("batchSize").toString());
+            logger.info("✅ batchSize actualizado a {}", this.batchSize);
+        }
+        if (config.containsKey("maxRetries")) {
+            this.maxRetries = Integer.parseInt(config.get("maxRetries").toString());
+            logger.info("✅ maxRetries actualizado a {}", this.maxRetries);
+        }
+        if (config.containsKey("retryWaitMinutes")) {
+            this.retryWaitMinutes = Integer.parseInt(config.get("retryWaitMinutes").toString());
+            logger.info("✅ retryWaitMinutes actualizado a {}", this.retryWaitMinutes);
+        }
+        emailService.sendNotification(notificationEmail, "Configuración Actualizada",
+                String.format("Configuración de batch actualizada:\nbatchSize=%d\nmaxRetries=%d\nretryWaitMinutes=%d",
+                        batchSize, maxRetries, retryWaitMinutes));
+    }
+
+    @Override
+    public Map<String, Object> getBatchConfig() {
+        Map<String, Object> config = new HashMap<>();
+        config.put("batchSize", batchSize);
+        config.put("maxRetries", maxRetries);
+        config.put("retryWaitMinutes", retryWaitMinutes);
+        config.put("apiUrl", apiUrl);
+        return config;
+    }
+
+    /*@Override
+    public void clearTipificacionClientesTable() {
+        // Método conservado pero no utilizado
+        logger.warn("⚠️ Método clearTipificacionClientesTable invocado pero no ejecutado.");
+    }*/
 }

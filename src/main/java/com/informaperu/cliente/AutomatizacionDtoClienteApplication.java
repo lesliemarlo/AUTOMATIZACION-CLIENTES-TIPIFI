@@ -14,6 +14,7 @@ import jakarta.persistence.EntityManagerFactory;
 
 @SpringBootApplication
 @EnableScheduling
+
 public class AutomatizacionDtoClienteApplication {
     
     private static final Logger logger = LoggerFactory.getLogger(AutomatizacionDtoClienteApplication.class);
