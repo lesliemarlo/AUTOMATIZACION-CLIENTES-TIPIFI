@@ -44,11 +44,11 @@ public class ClienteController {
             logger.info("╔═══════════════════════════════════════════════════════════════════╗");
             logger.info("║                      SOLICITUD DE DATOS                           ║");
             logger.info("╠═══════════════════════════════════════════════════════════════════╣");
-            logger.info("║ Portfolio: {}", String.format("%-52s ║", portfolio));
-            logger.info("║ Fecha inicio: {}", String.format("%-49s ║", startDate));
-            logger.info("║ Fecha fin: {}", String.format("%-51s ║", endDate));
-            logger.info("║ Límite: {}", String.format("%-53s ║", limit));
-            logger.info("║ Offset: {}", String.format("%-53s ║", offset));
+            logger.info("║ Portfolio: {} ║", String.format("%-52s", portfolio));
+            logger.info("║ Fecha inicio: {} ║", String.format("%-49s", startDate));
+            logger.info("║ Fecha fin: {} ║", String.format("%-51s", endDate));
+            logger.info("║ Límite: {} ║", String.format("%-53s", limit));
+            logger.info("║ Offset: {} ║", String.format("%-53s", offset));
             logger.info("╚═══════════════════════════════════════════════════════════════════╝");
 
             validateDateFormat(startDate);
@@ -85,11 +85,11 @@ public class ClienteController {
             logger.info("╔═══════════════════════════════════════════════════════════════════╗");
             logger.info("║                  SOLICITUD DE GUARDAR DATOS                       ║");
             logger.info("╠═══════════════════════════════════════════════════════════════════╣");
-            logger.info("║ Portfolio: {}", String.format("%-52s ║", portfolio));
-            logger.info("║ Fecha inicio: {}", String.format("%-49s ║", startDate));
-            logger.info("║ Fecha fin: {}", String.format("%-51s ║", endDate));
-            logger.info("║ Límite: {}", String.format("%-53s ║", limit));
-            logger.info("║ Offset: {}", String.format("%-53s ║", offset));
+            logger.info("║ Portfolio: {} ║", String.format("%-52s", portfolio));
+            logger.info("║ Fecha inicio: {} ║", String.format("%-49s", startDate));
+            logger.info("║ Fecha fin: {} ║", String.format("%-51s", endDate));
+            logger.info("║ Límite: {} ║", String.format("%-53s", limit));
+            logger.info("║ Offset: {} ║", String.format("%-53s", offset));
             logger.info("╚═══════════════════════════════════════════════════════════════════╝");
 
             validateDateFormat(startDate);
@@ -127,25 +127,31 @@ public class ClienteController {
             @RequestParam(value = "limit", defaultValue = "999999") int limit,
             @RequestParam(value = "offset", defaultValue = "1") int offset,
             @RequestParam(value = "portfolio", defaultValue = "04") String portfolio,
-            @RequestParam(value = "notification_email", defaultValue = "") String notificationEmail) {
+            @RequestParam(value = "notification_email") String notificationEmail) {
         try {
             logger.info("╔═══════════════════════════════════════════════════════════════════╗");
             logger.info("║            SOLICITUD DE PROCESAMIENTO POR LOTES (BATCH)           ║");
             logger.info("╠═══════════════════════════════════════════════════════════════════╣");
-            logger.info("║ Portfolio: {}", String.format("%-52s ║", portfolio));
-            logger.info("║ Fecha inicio: {}", String.format("%-49s ║", startDate));
-            logger.info("║ Fecha fin: {}", String.format("%-51s ║", endDate));
-            logger.info("║ Intervalo (días): {}", String.format("%-46s ║", intervalDays));
-            logger.info("║ Límite: {}", String.format("%-53s ║", limit));
-            logger.info("║ Offset: {}", String.format("%-53s ║", offset));
-            logger.info("║ Correo notificaciones: {}", String.format("%-40s ║", notificationEmail));
+            logger.info("║ Portfolio: {} ║", String.format("%-52s", portfolio));
+            logger.info("║ Fecha inicio: {} ║", String.format("%-49s", startDate));
+            logger.info("║ Fecha fin: {} ║", String.format("%-51s", endDate));
+            logger.info("║ Intervalo (días): {} ║", String.format("%-46s", intervalDays));
+            logger.info("║ Límite: {} ║", String.format("%-53s", limit));
+            logger.info("║ Offset: {} ║", String.format("%-53s", offset));
+            logger.info("║ Correo notificaciones: {} ║", String.format("%-40s", notificationEmail));
             logger.info("╚═══════════════════════════════════════════════════════════════════╝");
+
+            if (notificationEmail == null || notificationEmail.trim().isEmpty()) {
+                logger.error("❌ Error: El parámetro notification_email es obligatorio. Acción: Proporcione un correo válido.");
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                        .body("notification_email es obligatorio");
+            }
 
             LocalDateTime start = LocalDateTime.parse(startDate, DATE_TIME_FORMATTER);
             LocalDateTime end = LocalDateTime.parse(endDate, DATE_TIME_FORMATTER);
 
             if (start.isAfter(end)) {
-                logger.error("❌ Error: La fecha de inicio es posterior a la fecha fin");
+                logger.error("❌ Error: La fecha de inicio es posterior a la fecha fin. Acción: Ajuste las fechas.");
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                         .body("start_date debe ser anterior a end_date");
             }
@@ -159,11 +165,11 @@ public class ClienteController {
             return ResponseEntity.ok("✅ Procesamiento de rango de fechas iniciado correctamente. " +
                     "Se ejecutará cada 3 minutos para pruebas (en producción será cada hora).");
         } catch (DateTimeParseException e) {
-            logger.error("❌ Error en formato de fecha: {}", e.getMessage());
+            logger.error("❌ Error en formato de fecha: {}. Acción: Utilice el formato yyyy-MM-dd HH:mm:ss.", e.getMessage());
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body("Formato de fecha inválido. Utilice el formato: yyyy-MM-dd HH:mm:ss");
         } catch (Exception e) {
-            logger.error("❌ Error inesperado: {}", e.getMessage(), e);
+            logger.error("❌ Error inesperado: {}. Acción: Revise los logs para detalles.", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error al iniciar el procesamiento: " + e.getMessage());
         }
@@ -176,7 +182,7 @@ public class ClienteController {
             Map<String, Object> config = clienteService.getBatchConfig();
             return ResponseEntity.ok(config);
         } catch (Exception e) {
-            logger.error("❌ Error al obtener configuración: {}", e.getMessage());
+            logger.error("❌ Error al obtener configuración: {}. Acción: Revise los logs.", e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error al obtener configuración: " + e.getMessage());
         }
@@ -190,21 +196,21 @@ public class ClienteController {
             logger.info("✅ Configuración actualizada correctamente");
             return ResponseEntity.ok("✅ Configuración actualizada correctamente");
         } catch (Exception e) {
-            logger.error("❌ Error al actualizar configuración: {}", e.getMessage());
+            logger.error("❌ Error al actualizar configuración: {}. Acción: Revise los parámetros enviados.", e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error al actualizar configuración: " + e.getMessage());
         }
     }
 
     @GetMapping("/test-email")
-    public ResponseEntity<?> testEmail(@RequestParam(value = "to", defaultValue = "lesliemarlo09@gmail.com") String to) {
+    public ResponseEntity<?> testEmail(@RequestParam(value = "to") String to) {
         try {
             logger.info("🔄 Enviando correo de prueba a {}", to);
             emailService.sendNotification(to, "Prueba de Correo", "Este es un correo de prueba desde la aplicación.");
             logger.info("✅ Correo de prueba enviado a {}", to);
             return ResponseEntity.ok("✅ Correo de prueba enviado correctamente a " + to);
         } catch (Exception e) {
-            logger.error("❌ Error al enviar correo de prueba: {}", e.getMessage(), e);
+            logger.error("❌ Error al enviar correo de prueba: {}. Acción: Verifique las credenciales de correo o la configuración SMTP.", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error al enviar correo de prueba: " + e.getMessage());
         }
@@ -215,7 +221,7 @@ public class ClienteController {
             LocalDateTime.parse(date, DATE_TIME_FORMATTER);
             logger.debug("✅ Formato de fecha validado correctamente: {}", date);
         } catch (DateTimeParseException e) {
-            logger.error("❌ Error validando formato de fecha: {}", date);
+            logger.error("❌ Error validando formato de fecha: {}. Acción: Use el formato yyyy-MM-dd HH:mm:ss.", date);
             throw new DateTimeParseException("Formato de fecha inválido. Utilice el formato: yyyy-MM-dd HH:mm:ss", date, e.getErrorIndex());
         }
     }

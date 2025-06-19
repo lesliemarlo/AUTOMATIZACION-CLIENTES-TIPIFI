@@ -1,5 +1,4 @@
 package com.informaperu.cliente.service;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,14 +19,16 @@ public class EmailService {
     public void sendNotification(String to, String subject, String text) {
         try {
             SimpleMailMessage message = new SimpleMailMessage();
-            message.setFrom("your-email@gmail.com");
+            message.setFrom("lesliemarlo09@gmail.com");
             message.setTo(to);
             message.setSubject(subject);
             message.setText(text);
             mailSender.send(message);
-            logger.info("✅ Correo enviado a {} con asunto: {}", to, subject);
+            logger.info("✅ Correo enviado a {} con asunto: {}. Motivo: Envío exitoso.", to, subject);
         } catch (Exception e) {
-            logger.error("❌ Error al enviar correo a {}: {}", to, e.getMessage());
+            logger.error("❌ Error al enviar correo a {}. Motivo: {}. Acción: Verifique las credenciales de correo en application.properties o la configuración SMTP.", 
+                    to, e.getMessage());
+            throw new RuntimeException("Error al enviar correo: " + e.getMessage(), e);
         }
     }
 }
