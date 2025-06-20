@@ -209,7 +209,7 @@ public class ClienteServiceImpl implements ClienteService {
             while (!currentStart.isAfter(end)) {
                 currentInterval++;
 
-                LocalDateTime currentEnd = currentStart.plusDays(batchIntervalDays).minusSeconds(1);
+                LocalDateTime currentEnd = currentStart.plusDays(batchIntervalDays);
                 if (currentEnd.isAfter(end)) {
                     currentEnd = end;
                 }
@@ -413,7 +413,7 @@ public class ClienteServiceImpl implements ClienteService {
             LocalDateTime endDateTime = LocalDateTime.parse(endDate, DATE_TIME_FORMATTER);
 
             String formattedStartDate = startDateTime.format(DATE_TIME_FORMATTER);
-            String formattedEndDate = endDateTime.format(DATE_TIME_FORMATTER);
+            String formattedEndDate = endDateTime.plusSeconds(1).format(DATE_TIME_FORMATTER);
 
             String url = String.format("%s?limit=%d&offset=%d&portfolio=%s&start_date=%s&end_date=%s",
                     apiUrl, limit, offset, URLEncoder.encode(portfolio, StandardCharsets.UTF_8.name()),
@@ -455,19 +455,25 @@ public class ClienteServiceImpl implements ClienteService {
                 String resultsLog = String.format("📊 Registros recibidos de API: %d.", results.size());
                 logger.info(resultsLog);
                 logService.sendLog(resultsLog);
+             // Agregar log para inspeccionar idGestion
+                String idGestionLog = results.stream()
+                	    .map(dto -> "idGestion=" + dto.getIdGestion() + ", fechaTipificacion=" + dto.getFechaTipificacion())
+                	    .collect(Collectors.joining(", ", "🔍 Registros recibidos: [", "]"));
+                	logger.info(idGestionLog);
+                	logService.sendLog(idGestionLog);
 
                 results = results.stream()
-                        .filter(dto -> {
-                            boolean isValid = dto.getIdGestion() != null && dto.getFechaTipificacion() != null;
-                            if (!isValid) {
-                                String log = String.format("⚠️ Registro inválido: idGestion=%d, fechaTipificacion=%s. Motivo: Campos requeridos nulos.", 
-                                        dto.getIdGestion(), dto.getFechaTipificacion());
-                                logger.warn(log);
-                                logService.sendLog(log);
-                            }
-                            return isValid;
-                        })
-                        .collect(Collectors.toList());
+                	    .filter(dto -> {
+                	        boolean isValid = dto.getIdGestion() != null; // Solo validar idGestion
+                	        if (!isValid) {
+                	            String log = String.format("⚠️ Registro inválido: idGestion=%d. Motivo: idGestion nulo.", 
+                	                    dto.getIdGestion());
+                	            logger.warn(log);
+                	            logService.sendLog(log);
+                	        }
+                	        return isValid;
+                	    })
+                	    .collect(Collectors.toList());
 
                 String validLog = String.format("✅ Registros válidos: %d (%d%%). Motivo: Filtrado de registros con idGestion y fechaTipificacion válidos.", 
                         results.size(), response.getBody().getResults().size() > 0 ?
@@ -513,30 +519,29 @@ public class ClienteServiceImpl implements ClienteService {
         AtomicInteger newRecordsCount = new AtomicInteger(0);
 
         List<Cliente> entidades = datos.stream()
-                .filter(dto -> {
-                    boolean isValid = dto.getIdGestion() != null && dto.getFechaTipificacion() != null;
-                    if (!isValid) {
-                        String log = String.format("⚠️ Registro inválido: idGestion=%d, fechaTipificacion=%s. Motivo: Campos requeridos nulos. Acción: Omitir registro.", 
-                                dto.getIdGestion(), dto.getFechaTipificacion());
-                        logger.warn(log);
-                        logService.sendLog(log);
-                        return false;
-                    }
-                    
-                    // CAMBIO: Solo verificar por idGestion, no por fechaTipificacion
-                    List<Cliente> existing = repository.findAllByIdGestion(dto.getIdGestion());
-                    if (!existing.isEmpty()) {
-                        duplicatesCount.incrementAndGet();
-                        String log = String.format("⚠️ Registro duplicado: idGestion=%d. Motivo: Ya existe en la BD. Acción: Omitir registro.", 
-                                dto.getIdGestion());
-                        logger.debug(log);
-                        logService.sendLog(log);
-                        return false;
-                    }
-                    return true;
-                })
-                .map(this::mapToEntity)
-                .collect(Collectors.toList());
+        	    .filter(dto -> {
+        	        boolean isValid = dto.getIdGestion() != null; // Solo validar idGestion
+        	        if (!isValid) {
+        	            String log = String.format("⚠️ Registro inválido: idGestion=%d. Motivo: idGestion nulo. Acción: Omitir registro.", 
+        	                    dto.getIdGestion());
+        	            logger.warn(log);
+        	            logService.sendLog(log);
+        	            return false;
+        	        }
+        	        
+        	        List<Cliente> existing = repository.findAllByIdGestion(dto.getIdGestion());
+        	        if (!existing.isEmpty()) {
+        	            duplicatesCount.incrementAndGet();
+        	            String log = String.format("⚠️ Registro duplicado: idGestion=%d. Motivo: Ya existe en la BD. Acción: Omitir registro.", 
+        	                    dto.getIdGestion());
+        	            logger.debug(log);
+        	            logService.sendLog(log);
+        	            return false;
+        	        }
+        	        return true;
+        	    })
+        	    .map(this::mapToEntity)
+        	    .collect(Collectors.toList());
 
         totalDuplicates.addAndGet(duplicatesCount.get());
         newRecordsCount.set(entidades.size());
