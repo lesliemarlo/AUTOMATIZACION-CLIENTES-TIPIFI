@@ -522,12 +522,13 @@ public class ClienteServiceImpl implements ClienteService {
                         logService.sendLog(log);
                         return false;
                     }
-                    LocalDateTime fechaTipificacion = parseDateTime(dto.getFechaTipificacion());
-                    List<Cliente> existing = repository.findByIdGestionAndFechaTipificacion(dto.getIdGestion(), fechaTipificacion);
+                    
+                    // CAMBIO: Solo verificar por idGestion, no por fechaTipificacion
+                    List<Cliente> existing = repository.findAllByIdGestion(dto.getIdGestion());
                     if (!existing.isEmpty()) {
                         duplicatesCount.incrementAndGet();
-                        String log = String.format("⚠️ Registro duplicado: idGestion=%d, fechaTipificacion=%s. Motivo: Ya existe en la BD. Acción: Omitir registro.", 
-                                dto.getIdGestion(), dto.getFechaTipificacion());
+                        String log = String.format("⚠️ Registro duplicado: idGestion=%d. Motivo: Ya existe en la BD. Acción: Omitir registro.", 
+                                dto.getIdGestion());
                         logger.debug(log);
                         logService.sendLog(log);
                         return false;
@@ -591,7 +592,6 @@ public class ClienteServiceImpl implements ClienteService {
         logService.sendLog(completeLog);
         logService.sendLog("Progress: 100%");
     }
-
     private LocalDateTime parseDateTime(String dateTime) {
         if (dateTime == null || dateTime.isEmpty()) {
             String log = String.format("⚠️ Fecha nula o vacía. Motivo: Entrada inválida. Acción: Retornar null.");
